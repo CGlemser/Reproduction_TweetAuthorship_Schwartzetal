@@ -1,5 +1,5 @@
 #----------------------------------------------------------------------------
-# Kolleg Stylometry (Sept17)
+# Stylometry 
 # Replication of "Author Attribution of Micro Messages
 #
 # DISCLAIMER: a different corpus of tweets was used, since the original
@@ -10,9 +10,10 @@
 # 2) feature extraction
 # 3) preparing data for SVM
 # 4) SVM calculation
-# 5) TO DO ...
+# 5) Validation
+# 6) k-signatures & flexible patterns 
 #
-# Claudia Glemser, last edit: 17/Sept/17
+# Claudia Glemser, last edit: 14/Jan/18
 #----------------------------------------------------------------------------
 
 
@@ -20,7 +21,7 @@
 
 # create base data.frame
 # set working directory
-# setwd("D:/GoogleDrive/Kolleg_Stylometry/01Meeting_Prep/Corpus/")
+setwd("D:/GoogleDrive/Kolleg_Stylometry/01Meeting_Prep/Corpus/")
 
 # read both datasets and extract author & tweet
 dat.trai <- read.csv("training.1600000.processed.noemoticon.csv",
@@ -38,6 +39,8 @@ dat.test$tweet <- as.character(dat.test$tweet)
 dat.all <- rbind(dat.test, dat.trai)
 save(dat.all, file = "combineddata.RData")
 
+load("combineddata.RData")
+
 # look at our data
 tweetsPA <- aggregate(tweet ~ author, dat.all, length)
 # we have many authors: 660120
@@ -46,10 +49,12 @@ tweetsPA <- aggregate(tweet ~ author, dat.all, length)
 omit <- tweetsPA[tweetsPA$tweet %in% c(1:49), "author"]
 dat <- droplevels(dat.all[!(dat.all$author %in% omit),])
 str(dat)
+
+
 # 927 authors w/ at least 50 tweets
 # 74589 tweets overall
 ## (considerably smaller set than the original one) ##
-
+	
 ### pre-processing of tweet strings: omits and metatags
 # include START and END tag
 dat$tweet <- gsub("^", "START ", dat$tweet)
@@ -88,6 +93,33 @@ dat$tweet.c <- gsub("^START", " ", dat$tweet)
 dat$tweet.c <- gsub("END$", " ", dat$tweet.c)
 
 
+## filter ~70% of tweets per author for training set
+## => remaining 30% are validation/test data
+# extract all tweets per author -> sample 70% of them
+tweetsPA <- aggregate(tweet ~ author, dat, length)
+tweetsPA$train <- round(tweetsPA[,2]*0.7)
+tweetsPA$test  <- with(tweetsPA, tweet - train)
+tweetsPA <- tweetsPA[order(as.character(tweetsPA$author)),]
+
+auts <- tweetsPA$author
+
+dat.train <- data.frame(author = rep(auts, tweetsPA$train), tweet = "",
+												stringsAsFactors = FALSE)
+
+dat.test <- data.frame(author = rep(auts, tweetsPA$test), tweet = "",
+												stringsAsFactors = FALSE)
+
+for(i in 1:length(auts)){
+  tweets <- dat[dat$author == auts[i], "tweet"]
+  ind <- sample(1:length(tweets), size = tweetsPA$train[i], replace = FALSE)
+	train_tweets <- tweets[ind]
+	test_tweets  <- tweets[-ind]
+  dat.train[dat.train$author == auts[i], "tweet"] <- train_tweets
+  dat.test[dat.test$author == auts[i], "tweet"] <- test_tweets
+}
+
+save(dat.train, file = "processedTrainData.RData")
+save(dat.test, file = "processedTestData.RData")
 
 #####===== 2) feature extraction =====#####
 
@@ -119,25 +151,25 @@ library(ngram)  # include citation
 # we'll use two for both here, cause we have a small subset for most authors
 
 # exclude the author w/ > 500 tweets
-tweetsPA <- aggregate(tweet ~ author, dat, length)
-omit <- tweetsPA[tweetsPA$tweet > 500, "author"]
-dat <- droplevels(dat[dat$author != omit,])
+# tweetsPA <- aggregate(tweet ~ author, dat, length)
+# omit <- tweetsPA[tweetsPA$tweet > 500, "author"]
+# dat <- droplevels(dat[dat$author != omit,])
 ## 926 authors, 72869 tweets
-save(dat, file = "processeddata.RData")
 
-authors <- unique(dat$author)
+## following done with training data
+dat <- dat.train
 
-author.ngrams <- list(author = authors,
-											word.ngrams = vector("list", length(authors)),
-											char.ngrams = vector("list", length(authors)))
+author.ngrams <- list(author = auts,
+											word.ngrams = vector("list", length(auts)),
+											char.ngrams = vector("list", length(auts)))
 t_wng <- 2
 
 ## finds all tweets per author and looks for word n-grams (n = 2-5)
 ## all that are found at least twice are saved in the author.ngrams list
 system.time(
-for(i in 1:length(authors)){
+for(i in 1:length(auts)){
 	includePA <- c()
-  aut <- authors[i]
+  aut <- auts[i]
   tweets <- dat[dat$author == aut, "tweet"]
 		
   for(no in 2:5){
@@ -150,17 +182,18 @@ for(i in 1:length(authors)){
 	}
 }
 )
+# 44.01s
 
-save(author.ngrams, "wordngrams.RData")
+save(author.ngrams, "wordngrams_Train.RData")
 ## loads of authors with no word n-grams ... (not enough tweets per person?)
 
 
 ### character n-grams
 system.time(
-for(i in 1:length(authors)){
-	aut <- authors[i]
-  t_cng <- ifelse(tweetsPA[tweetsPA$author == aut, 2] > 200, 4, 2)
-  tweets <- dat[dat$author == aut, "tweet.c"]
+for(i in 1:length(auts)){
+	aut <- auts[i]
+  t_cng <- ifelse(tweetsPA[tweetsPA$author == aut, "train"] > 200, 4, 2)
+  tweets <- dat[dat$author == aut, "tweet"]
 	# split the tweets into single character so that each character
 	# constitutes a word (spaces become an underscore)
 	char.tab <- data.frame(ngrams = "TEST", freq = -1)
@@ -179,10 +212,11 @@ for(i in 1:length(authors)){
 	}
 }
 )
+# 123.93s
 
 # transform ngrams back into their original form
 system.time(
-for(i in 1:length(authors)){
+for(i in 1:length(auts)){
 	# remove the space between the single characters
   charngramsPA <- as.vector(sapply(author.ngrams$char.ngrams[[i]],
 																	 FUN = concatenate, rm.space = TRUE))
@@ -190,24 +224,24 @@ for(i in 1:length(authors)){
   author.ngrams$char.ngrams[[i]] <- gsub("_", " ", charngramsPA)
 }
 )
+# 23.23s
 
 ## they all have loads of char n-grams
-save(author.ngrams, file = "charandwordngrams.RData")
-
+save(author.ngrams, file = "charandwordngrams_Train.RData")
 
 
 #####===== 3) preparing data for SVM =====#####
 
 # add word n-grams as columns
-svm.dat <- data.frame(author = authors)
-for(i in 1:length(authors)){
+svm.dat <- data.frame(author = auts)
+for(i in 1:length(auts)){
   svm.dat[author.ngrams$word.ngrams[[i]]] <- ifelse(svm.dat$author ==
-																									 authors[i], 1, 0)
+																									 auts[i], 1, 0)
 }
 
-# add char n-grams as columns
-for(i in 1:length(authors)){
-	aut <- authors[i]
+# add char n-grams as columns: !!!THIS TAKES A LONG TIME!!!
+for(i in 1:length(auts)){
+	aut <- auts[i]
   chargramsPA <- author.ngrams$char.ngrams[[i]]
   # introduce new char n-grams as new columns
 	newgrams <- chargramsPA[!chargramsPA %in% colnames(svm.dat)]
@@ -220,11 +254,14 @@ for(i in 1:length(authors)){
 	}
 }
 
+length(unique(unlist(author.ngrams$word.ngrams)))  # 41
+length(unique(unlist(author.ngrams$char.ngrams)))  # 35269
+
 dim(svm.dat)
-# 926 authors
-# 43874 features
+# 927 authors
+# 35310 features (first col: author/target variable)
 
-
+save(svm.dat, file = "SVM_TrainingData.RData")
 
 #####===== 4) SVM calculation =====#####
 
@@ -233,34 +270,121 @@ dim(svm.dat)
 ##    authors?
 
 library(LiblineaR)
-cost.par <- heuristicC(as.matrix(svm.dat[,-1]))  # 0.0362
+cost.par <- heuristicC(as.matrix(svm.dat[,-1]))  # 0.0422
 # in paper: 10-fold cross-validation on training set
 # used heuristic here to save computational power
-
+system.time(
 svm.mod <- LiblineaR(svm.dat[,-1], svm.dat[,1], cost = cost.par)
+)  # 63.78
 # cross-validation could be entered here via "cross = 10"
 
-preds <- predict(svm.mod, svm.dat[,-1])$predictions
-sum(preds == svm.dat[,1])/length(svm.dat[,1])
-# svm.dat should here be another testing data set (will fix that asap)
 
-# -> I forgot to split the whole dataset into a training and test
-#    data set before the whole preprocessing, feature extraction ...
-# -> since the whole process takes quite some time up to here, I did not yet
-#    have time to fix it, but I'll change it asap and it doesn't change much
-#    in the actual code
+#####===== 5) Validate with remaining data set =====#####
+dat <- dat.test
+
+author.ngrams <- list(author = auts,
+											word.ngrams = vector("list", length(auts)),
+											char.ngrams = vector("list", length(auts)))
+t_wng <- 2
+
+## finds all tweets per author and looks for word n-grams (n = 2-5)
+## all that are found at least twice are saved in the author.ngrams list
+system.time(
+for(i in 1:length(auts)){
+	includePA <- c()
+  aut <- auts[i]
+  tweets <- dat[dat$author == aut, "tweet"]
+		
+  for(no in 2:5){
+		word.ngrams <- get.ngrams(ngram(tweets, n = no, sep = "~ "))
+		include <- table(word.ngrams) >= t_wng
+	  includePA <- c(names(table(word.ngrams)[include]), includePA)
+	}
+	if(!identical(includePA, character(0))){
+	  author.ngrams$word.ngrams[[i]] <- includePA
+	}
+}
+)
+# 18.89s
+
+### character n-grams
+system.time(
+for(i in 1:length(auts)){
+	aut <- auts[i]
+  t_cng <- ifelse(tweetsPA[tweetsPA$author == aut, "train"] > 200, 4, 2)
+  tweets <- dat[dat$author == aut, "tweet"]
+	# split the tweets into single character so that each character
+	# constitutes a word (spaces become an underscore)
+	char.tab <- data.frame(ngrams = "TEST", freq = -1)
+	for(j in 1:length(tweets)){
+	  tweet.sp <- splitter(tweets[j], split.char = TRUE, split.space = TRUE)
+	  # lists the frequency of each ngram: only include those appearing > 2
+	  char.tab.temp <- get.phrasetable(ngram(tweet.sp, n = 4, sep = " "))[,1:2]
+    char.tab <- rbind(char.tab.temp, char.tab)
+	}
+	char.tab <- aggregate(freq ~ ngrams, char.tab, sum)
+	include <- char.tab[2] >= t_cng
+	
+	# save them in the overall list
+	if(!identical(include, character(0))){
+	  author.ngrams$char.ngrams[[i]] <- char.tab[include, 1]
+	}
+}
+)
+# 60.27s
+
+# transform ngrams back into their original form
+system.time(
+for(i in 1:length(auts)){
+	# remove the space between the single characters
+  charngramsPA <- as.vector(sapply(author.ngrams$char.ngrams[[i]],
+																	 FUN = concatenate, rm.space = TRUE))
+  # replace the underscores with a space
+  author.ngrams$char.ngrams[[i]] <- gsub("_", " ", charngramsPA)
+}
+)
+# 8.89s
+
+## they all have loads of char n-grams
+save(author.ngrams, file = "charandwordngrams_Test.RData")
+
+svm.test <- data.frame(author = auts)
+svm.test[colnames(svm.dat)[-1]] <- 0
+
+colnames(svm.dat)[2:42]  # all word n-grams
+for(i in 1:length(auts)){
+  wordgrams <- author.ngrams$word.ngrams[[i]]
+	if(!is.null(wordgrams)){
+	  gramsInclude <- wordgrams[wordgrams %in% colnames(svm.dat)[2:42]]
+	  svm.test[gramsInclude] <- ifelse(svm.test$author == auts[i], 1, 0)
+	}
+}
+
+for(i in 1:length(auts)){
+  chargrams <- author.ngrams$char.ngrams[[i]]
+  gramsInclude <- chargrams[chargrams %in% colnames(svm.dat)[-(2:42)]]
+	svm.test[gramsInclude] <- ifelse(svm.test$author == auts[i], 1, 0)
+}
+
+### test predictions ###
+system.time(
+preds <- predict(svm.mod, svm.test[,-1])$predictions
+)
+
+sum(preds == svm.test[,1])/length(svm.test[,1])
+# 33.12% of the authors are predicted correctly
+# not too bad 
 
 
+#####===== 6) k-signatures & flexible patterns =====#####
 
-#####===== 5) SVM calculation =====#####
-
-## proper calculation of k-signatures ##
+## calculation of k-signatures ##
 
 # k-signatures: features that appear in at least k% of author a's training
 # sample, while not appearing in the training set of any other author
 colsums <- apply(svm.dat[,-1], 2, sum)
-sum(colsums == 1)  # 21624 features seem to only be present in one author's
+sum(colsums == 1)  # 17024 features seem to only be present in one author's
                    # set of tweets
 
-
 ## calculating flexible patterns ##
+# --- #
